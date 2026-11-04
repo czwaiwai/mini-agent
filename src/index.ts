@@ -149,6 +149,17 @@ async function main(): Promise<void> {
             );
             process.stdout.write('agent> ');
             break;
+          case 'compacting':
+            console.log(
+              `\n  📦 上下文约 ${event.estimatedTokens} tokens，超过阈值 ${event.threshold}，正在压缩历史...`,
+            );
+            break;
+          case 'compacted':
+            console.log(
+              `  📦 压缩完成：${event.beforeTokens} → ${event.afterTokens} tokens（早期对话已转为摘要）`,
+            );
+            process.stdout.write('agent> ');
+            break;
           case 'interrupted':
             console.log('\n(已中断当前轮，历史保持完整)');
             break;

@@ -16,6 +16,8 @@ import type { OpenAI } from 'openai';
 import { z } from 'zod';
 import { streamChat } from './agent/client.js';
 import { runToolCalls } from './tools/orchestrate.js';
+import { compactMessages, getCompactionThreshold, shouldCompact } from './compact.js';
+import { estimateMessagesTokens } from './tokenEstimator.js';
 import type { Tool } from './tools/Tool.js';
 import type { AgentConfig, ChatMessage, ToolContext } from './types.js';
 import type { PermissionManager } from './permissions.js';
@@ -26,6 +28,8 @@ export type QueryEvent =
   | { type: 'tool_start'; name: string; argsSummary: string }
   | { type: 'tool_result'; name: string; success: boolean; durationMs: number }
   | { type: 'retry'; attempt: number; maxRetries: number; delayMs: number; reason: string }
+  | { type: 'compacting'; estimatedTokens: number; threshold: number }
+  | { type: 'compacted'; beforeTokens: number; afterTokens: number }
   | { type: 'interrupted' }
   | { type: 'done' };
 
@@ -65,6 +69,20 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
   const openAITools = tools.map(toolToOpenAIFormat);
 
   while (true) {
+    // ── 第 0 步：上下文压缩检查（参照 claude-code 的 auto-compact）──
+    // 估算超过阈值就压缩：旧消息换成摘要，messages 原地更新。
+    // 注意此时可能刚回填完 tool 结果——压缩器会保证工具组不被切开。
+    const threshold = getCompactionThreshold();
+    if (shouldCompact(messages, threshold)) {
+      const beforeTokens = estimateMessagesTokens(messages);
+      yield { type: 'compacting', estimatedTokens: beforeTokens, threshold };
+      const compacted = await compactMessages(client, config, messages, signal);
+      if (compacted) {
+        messages.splice(0, messages.length, ...compacted);
+        yield { type: 'compacted', beforeTokens, afterTokens: estimateMessagesTokens(messages) };
+      }
+    }
+
     // ── 第 1 步：调模型，流式收集这一轮的完整回复 ──
     let assistantMessage: ChatMessage | undefined;
     try {
