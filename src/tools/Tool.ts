@@ -19,6 +19,7 @@
 
 import type { z } from 'zod';
 import type { ToolContext } from '../types.js';
+import type { PermissionResult } from '../permissions.js';
 
 /**
  * 工具执行结果 —— 【TS 知识点】可辨识联合：
@@ -40,6 +41,11 @@ export interface Tool<TInput extends z.ZodType = z.ZodType> {
   readonly description: string;
   readonly inputSchema: TInput;
   isReadOnly(input: z.infer<TInput>): boolean;
+  /**
+   * 工具级权限声明（对应 claude-code Tool.checkPermissions）。
+   * 不声明时的默认规则见 defineTool：只读 → allow，写 → ask。
+   */
+  checkPermissions?(input: z.infer<TInput>): PermissionResult;
   call(input: z.infer<TInput>, context: ToolContext): Promise<ToolResult>;
 }
 
@@ -56,16 +62,23 @@ export function defineTool<TInput extends z.ZodType>(def: {
   description: string;
   inputSchema: TInput;
   isReadOnly?: (input: z.infer<TInput>) => boolean;
+  checkPermissions?: (input: z.infer<TInput>) => PermissionResult;
   call: (input: z.infer<TInput>, context: ToolContext) => Promise<ToolResult>;
 }): Tool<TInput> {
+  const isReadOnly = def.isReadOnly ?? (() => false);
   return {
     name: def.name,
     description: def.description,
     inputSchema: def.inputSchema,
-    // 【TS 知识点】默认值兜底：不声明 isReadOnly 就当"非只读"处理，
-    // 对应 claude-code TOOL_DEFAULTS 的 fail-closed 原则——
-    // 默认按更保守的方式对待工具。
-    isReadOnly: def.isReadOnly ?? (() => false),
+    // fail-closed：不声明 isReadOnly 就按"非只读"处理（更保守），
+    // 非只读工具默认需要询问用户——对应 claude-code TOOL_DEFAULTS。
+    isReadOnly,
+    checkPermissions:
+      def.checkPermissions ??
+      ((input) =>
+        isReadOnly(input)
+          ? { behavior: 'allow' }
+          : { behavior: 'ask', message: `允许执行 ${def.name} 吗？` }),
     call: def.call,
   };
 }

@@ -18,6 +18,7 @@ import { streamChat } from './agent/client.js';
 import { runToolCalls } from './tools/orchestrate.js';
 import type { Tool } from './tools/Tool.js';
 import type { AgentConfig, ChatMessage, ToolContext } from './types.js';
+import type { PermissionManager } from './permissions.js';
 
 /** 主循环对外吐出的事件（UI 层据此渲染） */
 export type QueryEvent =
@@ -33,6 +34,8 @@ export interface QueryParams {
   messages: ChatMessage[];
   tools: Tool[];
   context: ToolContext;
+  /** 权限管理器（不传则不做权限检查——仅测试用） */
+  permissions?: PermissionManager;
 }
 
 /** zod schema → OpenAI 的 JSON Schema 参数格式 */
@@ -54,7 +57,7 @@ function toolToOpenAIFormat(tool: Tool) {
  * 消费方式：`for await (const event of query({...})) { ... }`
  */
 export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
-  const { client, config, messages, tools, context } = params;
+  const { client, config, messages, tools, context, permissions } = params;
   const openAITools = tools.map(toolToOpenAIFormat);
 
   while (true) {
@@ -93,7 +96,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     // ── 第 4 步：调度执行所有工具（只读并发、写串行），结果回填 ──
     // 【协议要点】tool 消息必须紧跟在这条 assistant 消息之后，
     // 且 tool_call_id 一一对应——顺序错了大多数兼容端点直接 400。
-    for await (const event of runToolCalls(toolCalls, tools, context)) {
+    for await (const event of runToolCalls(toolCalls, tools, context, permissions)) {
       if (event.type === 'tool_message') {
         messages.push(event.message);
       } else {

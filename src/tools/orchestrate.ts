@@ -15,6 +15,7 @@
 import { executeToolCall } from './execute.js';
 import type { Tool } from './Tool.js';
 import type { ChatMessage, ToolCall, ToolContext } from '../types.js';
+import type { PermissionManager } from '../permissions.js';
 
 /** 调度过程吐给上层的事件 */
 export type ToolExecEvent =
@@ -75,13 +76,14 @@ async function* runBatch(
   batch: ToolCall[],
   tools: Tool[],
   context: ToolContext,
+  permissions?: PermissionManager,
 ): AsyncGenerator<ToolExecEvent> {
   if (batch.length === 1) {
     // 单工具：直接跑
     const tc = batch[0]!;
     const startedAt = Date.now();
     yield { type: 'tool_start', name: tc.function.name, argsSummary: argsSummary(tc) };
-    const result = await executeToolCall(tc, tools, context);
+    const result = await executeToolCall(tc, tools, context, permissions);
     yield {
       type: 'tool_result',
       name: tc.function.name,
@@ -98,7 +100,7 @@ async function* runBatch(
     yield { type: 'tool_start', name: tc.function.name, argsSummary: argsSummary(tc) };
   }
 
-  const promises = batch.map((tc) => executeToolCall(tc, tools, context));
+  const promises = batch.map((tc) => executeToolCall(tc, tools, context, permissions));
   for (let i = 0; i < batch.length; i++) {
     const tc = batch[i]!;
     const result = await promises[i]!;
@@ -117,8 +119,9 @@ export async function* runToolCalls(
   toolCalls: ToolCall[],
   tools: Tool[],
   context: ToolContext,
+  permissions?: PermissionManager,
 ): AsyncGenerator<ToolExecEvent> {
   for (const batch of partitionBatches(toolCalls, tools)) {
-    yield* runBatch(batch, tools, context);
+    yield* runBatch(batch, tools, context, permissions);
   }
 }

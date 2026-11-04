@@ -23,6 +23,12 @@ export const writeFileTool = defineTool({
   inputSchema,
   // 不写 isReadOnly —— defineTool 默认按"非只读"处理（fail-closed）
 
+  // 工具级权限声明：给用户看清楚要改哪个文件
+  checkPermissions: (input) => ({
+    behavior: 'ask',
+    message: `允许写入文件 ${input.file_path} 吗？（将覆盖原有内容）`,
+  }),
+
   async call(input, context) {
     const absolutePath = isAbsolute(input.file_path)
       ? input.file_path

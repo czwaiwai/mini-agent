@@ -50,6 +50,12 @@ export const bashTool = defineTool({
   inputSchema,
   // 非只读：写操作（即使只跑 git status，shell 能力本身就是双刃剑）
 
+  // 工具级权限声明：把要跑的命令原样展示给用户
+  checkPermissions: (input) => ({
+    behavior: 'ask',
+    message: `允许执行命令吗？\n  $ ${input.command}`,
+  }),
+
   async call(input) {
     const { stdout, stderr, code } = await execPromise(input.command);
 
