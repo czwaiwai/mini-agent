@@ -1,0 +1,25 @@
+{
+  "name": "mini-agent",
+  "version": "0.1.0",
+  "description": "A mini coding agent built from scratch, modeled on claude-code architecture",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "agent",
+    "llm",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "openai": "^7.49.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
