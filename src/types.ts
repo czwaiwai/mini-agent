@@ -46,4 +46,6 @@ export interface AgentConfig {
 export interface ToolContext {
   /** 工作目录（相对路径的解析基准） */
   cwd: string;
+  /** 中断信号：bash 等长任务工具应响应它 */
+  signal?: AbortSignal;
 }

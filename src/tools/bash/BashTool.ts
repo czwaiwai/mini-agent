@@ -20,25 +20,6 @@ const inputSchema = z.strictObject({
   command: z.string().describe('要执行的 shell 命令'),
 });
 
-/**
- * 【TS 知识点】把回调风格的 exec 包装成 Promise。
- * exec 的回调是 (error, stdout, stderr)，error 上还挂着
- * 退出码等附加信息——TS 会推推断出 err 的类型，我们用
- * 类型守卫（instanceof）安全地取字段。
- */
-function execPromise(command: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve) => {
-    exec(
-      command,
-      { cwd: process.cwd(), timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
-        resolve({ stdout, stderr, code: err ? code : 0 });
-      },
-    );
-  });
-}
-
 function truncate(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   return text.slice(0, MAX_OUTPUT_CHARS) + `\n...（输出超过 ${MAX_OUTPUT_CHARS} 字符，已截断）`;
@@ -56,8 +37,41 @@ export const bashTool = defineTool({
     message: `允许执行命令吗？\n  $ ${input.command}`,
   }),
 
-  async call(input) {
-    const { stdout, stderr, code } = await execPromise(input.command);
+  async call(input, context) {
+    // signal：用户 Ctrl+C 时立刻终止子进程（对应 claude-code 的
+    // abort 传播——中断不能只停模型调用，工具也要能停）
+    const { stdout, stderr, code, killed } = await new Promise<{
+      stdout: string;
+      stderr: string;
+      code: number | null;
+      killed: boolean;
+    }>((resolve) => {
+      exec(
+        input.command,
+        {
+          cwd: context.cwd,
+          timeout: TIMEOUT_MS,
+          maxBuffer: 10 * 1024 * 1024,
+          signal: context.signal,
+        },
+        (err, stdout, stderr) => {
+          if (err) {
+            resolve({
+              stdout,
+              stderr,
+              code: typeof err.code === 'number' ? err.code : 1,
+              killed: err.killed === true,
+            });
+          } else {
+            resolve({ stdout, stderr, code: 0, killed: false });
+          }
+        },
+      );
+    });
+
+    if (killed) {
+      return { type: 'error', output: '错误：命令被用户中断。' };
+    }
 
     if (code !== 0) {
       return {

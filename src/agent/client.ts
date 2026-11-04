@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import OpenAI from 'openai';
+import OpenAI, { APIError } from 'openai';
 import type { AgentConfig, ChatMessage, ToolCall } from '../types.js';
 
 /** 极简 .env 加载器：环境变量 > .env 文件 > 默认值 */
@@ -75,7 +75,64 @@ function toApiMessages(messages: ChatMessage[]): ChatMessage[] {
 export type StreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'message_complete'; message: ChatMessage }
+  | { type: 'retry'; attempt: number; maxRetries: number; delayMs: number; reason: string }
   | { type: 'done' };
+
+/**
+ * ── 重试机制（参照 claude-code 的 src/services/api/withRetry.ts）──
+ *
+ * claude-code 的 withRetry 是一个 async generator：每次尝试 yield 一次
+ * 进度，指数退避，尊重 Retry-After 头。它的注释很有教学价值：
+ * "default to no-retry — add here only if the user is waiting on the result"
+ * （默认不重试——只有用户在等结果的场景才加重试）。
+ *
+ * 我们的重试范围：只覆盖"建立流连接"这一步。一旦流建立、开始吐字，
+ * 中途断掉就不重试了（否则已打印的内容会重复）——这是流式 + 重试
+ * 的经典取舍，claude-code 的非流式 fallback 也是类似思路。
+ */
+
+const MAX_RETRIES = 3;
+
+/** 判断一个错误是否值得重试：429/5xx/超时/网络错误值得，4xx 参数错误不值得 */
+export function isRetryable(err: unknown): boolean {
+  if (err instanceof APIError) {
+    const status = err.status;
+    if (status === undefined) return true; // 无状态码的 API 错误（如连接失败）
+    return status === 408 || status === 409 || status === 429 || status >= 500;
+  }
+  const name = (err as { name?: string }).name;
+  return name === 'APIConnectionError' || name === 'APIConnectionTimeoutError';
+}
+
+/** 计算退避延迟：优先用服务器的 Retry-After，否则指数退避 + 随机抖动 */
+export function getRetryDelay(err: unknown, attempt: number): number {
+  if (err instanceof APIError) {
+    // 【TS 知识点】headers 是 Fetch API 的 Headers 对象，
+    // 取值要用 .get() 方法，不能用下标
+    const retryAfter = err.headers?.get('retry-after');
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (!Number.isNaN(seconds)) return Math.min(seconds * 1000, 60_000);
+    }
+  }
+  // 指数退避：1s → 2s → 4s...，加 0~500ms 随机抖动避免同时重试踩踏
+  return Math.min(1000 * 2 ** attempt + Math.random() * 500, 30_000);
+}
+
+/** 支持 AbortSignal 的 sleep */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException('aborted', 'AbortError'));
+      },
+      { once: true },
+    );
+  });
+}
 
 /** 用于按 index 累积一个正在"生长"的 tool_call */
 interface PartialToolCall {
@@ -87,14 +144,34 @@ export async function* streamChat(
   client: OpenAI,
   config: AgentConfig,
   messages: ChatMessage[],
+  signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const stream = await client.chat.completions.create({
-    model: config.model,
-    messages: toApiMessages(messages) as Parameters<
-      typeof client.chat.completions.create
-    >[0]['messages'],
-    stream: true,
-  });
+  // ── 建立流连接（带重试）──
+  let stream: Awaited<ReturnType<typeof client.chat.completions.create>>;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      stream = await client.chat.completions.create(
+        {
+          model: config.model,
+          messages: toApiMessages(messages) as Parameters<
+            typeof client.chat.completions.create
+          >[0]['messages'],
+          stream: true,
+        },
+        // signal 传给底层 fetch：abort 时请求立刻取消
+        { signal },
+      );
+      break;
+    } catch (err) {
+      // 用户主动中断 → 不重试，直接抛出（上层会识别 AbortError）
+      if (signal?.aborted) throw err;
+      if (attempt >= MAX_RETRIES || !isRetryable(err)) throw err;
+      const delayMs = getRetryDelay(err, attempt);
+      const reason = err instanceof Error ? err.message : String(err);
+      yield { type: 'retry', attempt: attempt + 1, maxRetries: MAX_RETRIES, delayMs, reason };
+      await sleep(delayMs, signal);
+    }
+  }
 
   let content = '';
   // 累积中的 tool_calls：key 是流里的 index（一个回复可能调多个工具）

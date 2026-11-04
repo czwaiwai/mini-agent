@@ -25,6 +25,8 @@ export type QueryEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'tool_start'; name: string; argsSummary: string }
   | { type: 'tool_result'; name: string; success: boolean; durationMs: number }
+  | { type: 'retry'; attempt: number; maxRetries: number; delayMs: number; reason: string }
+  | { type: 'interrupted' }
   | { type: 'done' };
 
 export interface QueryParams {
@@ -36,6 +38,8 @@ export interface QueryParams {
   context: ToolContext;
   /** 权限管理器（不传则不做权限检查——仅测试用） */
   permissions?: PermissionManager;
+  /** 中断信号：用户 Ctrl+C 时 abort 当前轮 */
+  signal?: AbortSignal;
 }
 
 /** zod schema → OpenAI 的 JSON Schema 参数格式 */
@@ -57,18 +61,29 @@ function toolToOpenAIFormat(tool: Tool) {
  * 消费方式：`for await (const event of query({...})) { ... }`
  */
 export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
-  const { client, config, messages, tools, context, permissions } = params;
+  const { client, config, messages, tools, context, permissions, signal } = params;
   const openAITools = tools.map(toolToOpenAIFormat);
 
   while (true) {
     // ── 第 1 步：调模型，流式收集这一轮的完整回复 ──
     let assistantMessage: ChatMessage | undefined;
-    for await (const event of streamChat(client, config, messages)) {
-      if (event.type === 'text_delta') {
-        yield { type: 'text_delta', text: event.text };
-      } else if (event.type === 'message_complete') {
-        assistantMessage = event.message;
+    try {
+      for await (const event of streamChat(client, config, messages, signal)) {
+        if (event.type === 'text_delta') {
+          yield { type: 'text_delta', text: event.text };
+        } else if (event.type === 'message_complete') {
+          assistantMessage = event.message;
+        } else if (event.type === 'retry') {
+          yield event; // 重试进度透传给 UI
+        }
       }
+    } catch (err) {
+      // 用户中断 → 优雅结束本轮（不是错误）
+      if (signal?.aborted) {
+        yield { type: 'interrupted' };
+        return;
+      }
+      throw err; // 其他错误照常抛出，由 REPL 层展示
     }
 
     if (!assistantMessage) {
@@ -90,6 +105,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     if (toolCalls.length === 0) {
       // 模型没有调用任何工具 = 纯文本回复 = 任务完成
       yield { type: 'done' };
+      return;
+    }
+
+    // 中断保护：如果用户在模型输出期间按了 Ctrl+C，此刻再执行工具
+    // 就没意义了。而且必须把刚 push 的 assistant 消息回滚——
+    // 否则历史里会留下"有 tool_calls 却没有对应 tool 结果"的悬空
+    // 消息，下一轮请求会因协议不完整被服务端拒绝（400）。
+    if (signal?.aborted) {
+      messages.pop();
+      yield { type: 'interrupted' };
       return;
     }
 
