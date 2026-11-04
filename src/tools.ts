@@ -1,21 +1,25 @@
 /**
  * tools.ts —— 工具注册表（参照 claude-code 的 src/tools.ts）
  *
- * claude-code 的 getAllBaseTools() 是一个大数组，用条件展开
- * （feature flag / env）决定哪些工具可用，getTools() 再按权限过滤。
- * 我们 MVP 版本就是一个简单的数组 + 查找函数。
- *
  * 新增工具的流程：建 src/tools/<name>/ 目录 → 在这里 import 并加入数组。
  */
 
 import type { Tool } from './tools/Tool.js';
 import { readFileTool } from './tools/read-file/ReadFileTool.js';
+import { listDirTool } from './tools/list-dir/ListDirTool.js';
+import { globTool } from './tools/glob/GlobTool.js';
+import { writeFileTool } from './tools/write-file/WriteFileTool.js';
+import { bashTool } from './tools/bash/BashTool.js';
 
 /** 所有可用工具。模型只在请求里看到这里的工具。 */
 export function getAllTools(): Tool[] {
   return [
     readFileTool,
-    // Phase 3 在这里追加 list_dir / glob / write_file / bash
+    listDirTool,
+    globTool,
+    writeFileTool,
+    bashTool,
+    // Phase 4 之后如需新工具在这里追加
   ];
 }
 

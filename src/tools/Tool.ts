@@ -20,12 +20,15 @@
 import type { z } from 'zod';
 import type { ToolContext } from '../types.js';
 
-/** 工具执行结果。Phase 3 会升级为可辨识联合。 */
-export interface ToolResult {
-  success: boolean;
-  /** 给模型看的内容（会作为 tool result 发回去） */
-  output: string;
-}
+/**
+ * 工具执行结果 —— 【TS 知识点】可辨识联合：
+ * 成功和失败都用 type 字段区分，消费方 switch 判断后自动收窄。
+ * （Phase 2 里用 success: boolean，现在升级为联合——
+ * 语义更明确，也顺便练习这个建模手法）
+ */
+export type ToolResult =
+  | { type: 'success'; output: string }
+  | { type: 'error'; output: string };
 
 /**
  * 工具定义接口。

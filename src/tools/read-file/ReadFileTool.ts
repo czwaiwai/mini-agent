@@ -49,22 +49,19 @@ export const readFileTool = defineTool({
     } catch (err) {
       // 把错误变成"给模型看的信息"而不是崩溃
       const reason = err instanceof Error ? err.message : String(err);
-      return {
-        success: false,
-        output: `无法读取文件 ${input.file_path}：${reason}`,
-      };
+      return { type: 'error', output: `无法读取文件 ${input.file_path}：${reason}` };
     }
 
     const lines = content.split('\n');
     if (lines.length > MAX_LINES) {
       return {
-        success: true,
+        type: 'success',
         output: `${absolutePath} 的前 ${MAX_LINES} 行（共 ${lines.length} 行，已截断）：\n${lines
           .slice(0, MAX_LINES)
           .join('\n')}`,
       };
     }
 
-    return { success: true, output: `${absolutePath} 的内容：\n${content}` };
+    return { type: 'success', output: `${absolutePath} 的内容：\n${content}` };
   },
 });
